@@ -1748,7 +1748,7 @@ int freerdp_client_settings_parse_command_line_arguments(rdpSettings* settings, 
 				{
 					LONGLONG val;
 
-					if (!value_to_int(&p[2], &val, 0, UINT16_MAX))
+					if (!value_to_int(&p2[2], &val, 0, UINT16_MAX))
 						return COMMAND_LINE_ERROR_UNEXPECTED_VALUE;
 
 					settings->ServerPort = (UINT16)val;
@@ -2867,7 +2867,7 @@ int freerdp_client_settings_parse_command_line_arguments(rdpSettings* settings, 
 
 			if (strcmp(arg->Value, "netmon") == 0)
 			{
-				ciphers = "ALL:!ECDH";
+				ciphers = "ALL:!ECDH:!ADH:!DHE";
 			}
 			else if (strcmp(arg->Value, "ma") == 0)
 			{
@@ -2889,6 +2889,14 @@ int freerdp_client_settings_parse_command_line_arguments(rdpSettings* settings, 
 				return COMMAND_LINE_ERROR_UNEXPECTED_VALUE;
 
 			settings->TlsSecLevel = (UINT32)val;
+		}
+		CommandLineSwitchCase(arg, "tls-secrets-file")
+		{
+			if (!arg->Value)
+				return COMMAND_LINE_ERROR_UNEXPECTED_VALUE;
+
+			if (!freerdp_settings_set_string(settings, FreeRDP_TlsSecretsFile, arg->Value))
+				return COMMAND_LINE_ERROR_MEMORY;
 		}
 		CommandLineSwitchCase(arg, "enforce-tlsv1_2")
 		{

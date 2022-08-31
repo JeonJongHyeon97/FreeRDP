@@ -646,6 +646,33 @@ out_free:
 	return NULL;
 }
 
+static INIT_ONCE secrets_file_idx_once = INIT_ONCE_STATIC_INIT;
+static int secrets_file_idx = -1;
+
+static BOOL CALLBACK secrets_file_init_cb(PINIT_ONCE once, PVOID param, PVOID* context)
+{
+	secrets_file_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+
+	return (secrets_file_idx != -1);
+}
+
+static void SSLCTX_keylog_cb(const SSL* ssl, const char* line)
+{
+	char* dfile;
+
+	if (secrets_file_idx == -1)
+		return;
+
+	dfile = SSL_get_ex_data(ssl, secrets_file_idx);
+	if (dfile)
+	{
+		FILE* f = fopen(dfile, "a+");
+		fwrite(line, strlen(line), 1, f);
+		fwrite("\n", 1, 1, f);
+		fclose(f);
+	}
+}
+
 #if OPENSSL_VERSION_NUMBER >= 0x010000000L
 static BOOL tls_prepare(rdpTls* tls, BIO* underlying, const SSL_METHOD* method, int options,
                         BOOL clientMode)
@@ -656,6 +683,7 @@ static BOOL tls_prepare(rdpTls* tls, BIO* underlying, SSL_METHOD* method, int op
 {
 	rdpSettings* settings = tls->settings;
 	tls->ctx = SSL_CTX_new(method);
+
 	tls->underlying = underlying;
 
 	if (!tls->ctx)
@@ -700,6 +728,21 @@ static BOOL tls_prepare(rdpTls* tls, BIO* underlying, SSL_METHOD* method, int op
 	{
 		WLog_ERR(TAG, "unable to retrieve the SSL of the connection");
 		return FALSE;
+	}
+
+	if (settings->TlsSecretsFile)
+	{
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
+		InitOnceExecuteOnce(&secrets_file_idx_once, secrets_file_init_cb, NULL, NULL);
+
+		if (secrets_file_idx != -1)
+		{
+			SSL_set_ex_data(tls->ssl, secrets_file_idx, settings->TlsSecretsFile);
+			SSL_CTX_set_keylog_callback(tls->ctx, SSLCTX_keylog_cb);
+		}
+#else
+		WLog_WARN(TAG, "Key-Logging not available - requires OpenSSL 1.1.1 or higher");
+#endif
 	}
 
 	BIO_push(tls->bio, underlying);
@@ -908,6 +951,7 @@ BOOL tls_accept(rdpTls* tls, BIO* underlying, rdpSettings* settings)
 	long options = 0;
 	BIO* bio;
 	EVP_PKEY* privkey;
+	int status;
 	X509* x509;
 
 	/**
@@ -982,10 +1026,16 @@ BOOL tls_accept(rdpTls* tls, BIO* underlying, rdpSettings* settings)
 		return FALSE;
 	}
 
-	if (SSL_use_PrivateKey(tls->ssl, privkey) <= 0)
+	status = SSL_use_PrivateKey(tls->ssl, privkey);
+	/* The local reference to the private key will anyway go out of
+	 * scope; so the reference count should be decremented weither
+	 * SSL_use_PrivateKey succeeds or fails.
+	 */
+	EVP_PKEY_free(privkey);
+
+	if (status <= 0)
 	{
 		WLog_ERR(TAG, "SSL_CTX_use_PrivateKey_file failed");
-		EVP_PKEY_free(privkey);
 		return FALSE;
 	}
 
@@ -1007,10 +1057,16 @@ BOOL tls_accept(rdpTls* tls, BIO* underlying, rdpSettings* settings)
 		return FALSE;
 	}
 
-	if (SSL_use_certificate(tls->ssl, x509) <= 0)
+	status = SSL_use_certificate(tls->ssl, x509);
+	/* The local reference to the X509 certificate will anyway go out
+	 * of scope; so the reference count should be decremented weither
+	 * SSL_use_certificate succeeds or fails.
+	 */
+	X509_free(x509);
+
+	if (status <= 0)
 	{
 		WLog_ERR(TAG, "SSL_use_certificate_file failed");
-		X509_free(x509);
 		return FALSE;
 	}
 
